@@ -57,9 +57,18 @@ if (!OFFLINE_APP && 'serviceWorker' in navigator) {
     if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',applyUser);
     else applyUser();
   }
+  const isEnoteHost = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.electroNote) ||
+    (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('app') === 'electronote');
+
   if (OFFLINE_APP) { proceed({username:'', is_admin:false}); return; }
   fetch('/api/me.php',{credentials:'include'}).then(r=>r.json()).then(d=>{
-    if(!d.user){ localStorage.removeItem('elektroplan_user'); location.href='/login.html'; return; }
+    if(!d.user){
+      if (isEnoteHost) {
+        proceed({username:'Gast / ElectroNote', is_admin:false, is_demo:true});
+        return;
+      }
+      localStorage.removeItem('elektroplan_user'); location.href='/login.html'; return;
+    }
     localStorage.setItem('elektroplan_user', JSON.stringify(d.user));
     proceed(d.user);
   }).catch(()=>{
@@ -69,6 +78,7 @@ if (!OFFLINE_APP && 'serviceWorker' in navigator) {
     let cached=null;
     try { cached=JSON.parse(localStorage.getItem('elektroplan_user')||'null'); } catch(e){}
     if (cached) proceed(cached);
+    else if (isEnoteHost) proceed({username:'Gast / ElectroNote', is_admin:false, is_demo:true});
     else location.href='/login.html';
   });
 })();
@@ -218,8 +228,8 @@ kbd { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3);
       <button class="t-btn" id="es-cloud-load-btn" onclick="serverLoad()">☁ Laden</button>
       <button class="t-btn" id="btn-app-login" onclick="appShowLogin()" style="display:none">👤 Anmelden</button>
       <button class="t-btn" id="btn-app-cloud-save" onclick="appCloudSave()" style="display:none">☁ Online speichern</button>
-      <button class="t-btn" id="btn-app-cloud-load" onclick="appCloudLoad()" style="display:none">☁ Online laden</button>
       <button class="t-btn" onclick="exportPNG()">🖼 PNG</button>
+      <button class="t-btn" id="btn-enote-insert" onclick="openEnoteModal()" style="display:none;background:linear-gradient(135deg,#2563eb,#1d4ed8);border:1px solid #60a5fa;color:#fff;font-weight:700;box-shadow:0 1px 3px rgba(0,0,0,0.25);">📋 In Notiz einfügen</button>
       <div class="t-sep"></div>
       <button class="t-btn" id="btn-sim" onclick="toggleSim()">⚡ Simulation</button>
       <button class="t-btn" id="btn-probe" onclick="toggleProbeMode()" style="display:none" title="Zwei Kontaktpunkte antippen, um Spannung/Durchgang zu messen (400/230V TN-C-S)">🔍 Prüfer</button>
@@ -6367,6 +6377,364 @@ function showSaveIndicator(msg){
   el.textContent=msg; el.style.opacity='1';
   clearTimeout(el._t); el._t=setTimeout(()=>el.style.opacity='0',2500);
 }
+// ── ElectroNote Integration (Kombi: Auto-Crop, Snipping, Viewport) ──
+function openEnoteModal() {
+  const m = document.getElementById('enote-modal');
+  if (m) m.style.display = 'flex';
+}
+function closeEnoteModal() {
+  const m = document.getElementById('enote-modal');
+  if (m) m.style.display = 'none';
+}
+
+function enoteGetBounds() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let count = 0;
+  if (Array.isArray(comps) && comps.length) {
+    for (const c of comps) {
+      const w = (c.def && c.def.w) || 60;
+      const h = (c.def && c.def.h) || 60;
+      minX = Math.min(minX, c.x); minY = Math.min(minY, c.y);
+      maxX = Math.max(maxX, c.x + w); maxY = Math.max(maxY, c.y + h);
+      count++;
+    }
+  }
+  if (Array.isArray(wires) && wires.length) {
+    for (const w of wires) {
+      if (w.pts && w.pts.length) {
+        for (const p of w.pts) {
+          minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+          maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+          count++;
+        }
+      }
+    }
+  }
+  if (Array.isArray(frames) && frames.length) {
+    for (const f of frames) {
+      minX = Math.min(minX, f.x); minY = Math.min(minY, f.y);
+      maxX = Math.max(maxX, f.x + (f.w || 100)); maxY = Math.max(maxY, f.y + (f.h || 100));
+      count++;
+    }
+  }
+  if (Array.isArray(texts) && texts.length) {
+    for (const t of texts) {
+      minX = Math.min(minX, t.x); minY = Math.min(minY, t.y);
+      maxX = Math.max(maxX, t.x + 100); maxY = Math.max(maxY, t.y + 30);
+      count++;
+    }
+  }
+  if (count === 0 || !isFinite(minX) || maxX <= minX || maxY <= minY) {
+    return null;
+  }
+  const pad = 35;
+  return {
+    x: Math.max(0, minX - pad),
+    y: Math.max(0, minY - pad),
+    w: (maxX - minX) + pad * 2,
+    h: (maxY - minY) + pad * 2
+  };
+}
+
+function enoteExportAuto() {
+  const b = enoteGetBounds();
+  closeEnoteModal();
+  if (!b) {
+    enoteExportViewport();
+    return;
+  }
+  renderCroppedCircuitPNG(b.x, b.y, b.w, b.h, (dataUrl, w, h) => {
+    sendToElectroNote(dataUrl, w, h);
+  });
+}
+
+function enoteExportViewport() {
+  closeEnoteModal();
+  const svgEl = document.getElementById('svg');
+  const W = svgEl.clientWidth || window.innerWidth;
+  const H = svgEl.clientHeight || window.innerHeight;
+  const cropX = -vpX / vpZ;
+  const cropY = -vpY / vpZ;
+  const cropW = W / vpZ;
+  const cropH = H / vpZ;
+  renderCroppedCircuitPNG(cropX, cropY, cropW, cropH, (dataUrl, w, h) => {
+    sendToElectroNote(dataUrl, w, h);
+  });
+}
+
+// ── Snipping Tool (Freie Rechteckauswahl mit Apple Pencil / Finger) ──
+let _snipActive = false, _snipDrawing = false;
+let _snipStart = { x: 0, y: 0 };
+let _snipBox = { x: 0, y: 0, w: 0, h: 0 };
+
+function enoteStartSnipping() {
+  closeEnoteModal();
+  const overlay = document.getElementById('enote-snipping-overlay');
+  if (!overlay) return;
+  _snipActive = true;
+  _snipDrawing = false;
+  _snipBox = { x: 0, y: 0, w: 0, h: 0 };
+  updateSnipSVG();
+  document.getElementById('enote-snip-actions').style.display = 'none';
+  overlay.style.display = 'block';
+}
+
+function cancelEnoteSnipping() {
+  _snipActive = false;
+  _snipDrawing = false;
+  const overlay = document.getElementById('enote-snipping-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function enoteResetSnippingSelection() {
+  _snipDrawing = false;
+  _snipBox = { x: 0, y: 0, w: 0, h: 0 };
+  updateSnipSVG();
+  document.getElementById('enote-snip-actions').style.display = 'none';
+}
+
+function updateSnipSVG() {
+  const W = window.innerWidth, H = window.innerHeight;
+  const { x, y, w, h } = _snipBox;
+  const dt = document.getElementById('enote-snip-dim-top');
+  const db = document.getElementById('enote-snip-dim-bottom');
+  const dl = document.getElementById('enote-snip-dim-left');
+  const dr = document.getElementById('enote-snip-dim-right');
+  const box = document.getElementById('enote-snip-box');
+
+  if (w <= 0 || h <= 0) {
+    if (dt) { dt.setAttribute('x', 0); dt.setAttribute('y', 0); dt.setAttribute('width', W); dt.setAttribute('height', H); }
+    if (db) { db.setAttribute('width', 0); }
+    if (dl) { dl.setAttribute('width', 0); }
+    if (dr) { dr.setAttribute('width', 0); }
+    if (box) { box.setAttribute('width', 0); box.setAttribute('height', 0); }
+    return;
+  }
+
+  if (dt) { dt.setAttribute('x', 0); dt.setAttribute('y', 0); dt.setAttribute('width', W); dt.setAttribute('height', y); }
+  if (db) { db.setAttribute('x', 0); db.setAttribute('y', y + h); db.setAttribute('width', W); db.setAttribute('height', Math.max(0, H - (y + h))); }
+  if (dl) { dl.setAttribute('x', 0); dl.setAttribute('y', y); dl.setAttribute('width', x); dl.setAttribute('height', h); }
+  if (dr) { dr.setAttribute('x', x + w); dr.setAttribute('y', y); dr.setAttribute('width', Math.max(0, W - (x + w))); dr.setAttribute('height', h); }
+
+  if (box) {
+    box.setAttribute('x', x);
+    box.setAttribute('y', y);
+    box.setAttribute('width', w);
+    box.setAttribute('height', h);
+  }
+}
+
+function enoteConfirmSnipping() {
+  const { x, y, w, h } = _snipBox;
+  if (w < 15 || h < 15) return;
+  cancelEnoteSnipping();
+
+  const svgEl = document.getElementById('svg');
+  const r = svgEl.getBoundingClientRect();
+  const wx = (x - r.left - vpX) / vpZ;
+  const wy = (y - r.top - vpY) / vpZ;
+  const ww = w / vpZ;
+  const wh = h / vpZ;
+
+  renderCroppedCircuitPNG(wx, wy, ww, wh, (dataUrl, rw, rh) => {
+    sendToElectroNote(dataUrl, rw, rh);
+  });
+}
+
+(function initSnipEvents() {
+  const overlay = document.getElementById('enote-snipping-overlay');
+  if (!overlay) return;
+
+  overlay.addEventListener('pointerdown', e => {
+    if (e.target.closest('#enote-snip-actions') || e.target.closest('button')) return;
+    _snipDrawing = true;
+    _snipStart = { x: e.clientX, y: e.clientY };
+    _snipBox = { x: e.clientX, y: e.clientY, w: 0, h: 0 };
+    updateSnipSVG();
+    document.getElementById('enote-snip-actions').style.display = 'none';
+    try { overlay.setPointerCapture(e.pointerId); } catch(err){}
+  });
+
+  overlay.addEventListener('pointermove', e => {
+    if (!_snipDrawing) return;
+    const curX = e.clientX, curY = e.clientY;
+    const x = Math.min(_snipStart.x, curX);
+    const y = Math.min(_snipStart.y, curY);
+    const w = Math.abs(curX - _snipStart.x);
+    const h = Math.abs(curY - _snipStart.y);
+    _snipBox = { x, y, w, h };
+    updateSnipSVG();
+  });
+
+  const finishDrag = (e) => {
+    if (!_snipDrawing) return;
+    _snipDrawing = false;
+    try { overlay.releasePointerCapture(e.pointerId); } catch(err){}
+    const { x, y, w, h } = _snipBox;
+    if (w >= 20 && h >= 20) {
+      const actions = document.getElementById('enote-snip-actions');
+      if (actions) {
+        actions.style.display = 'flex';
+        const left = Math.min(window.innerWidth - 240, Math.max(16, x + w - 210));
+        const top = (y + h + 50 < window.innerHeight) ? (y + h + 12) : Math.max(16, y - 48);
+        actions.style.left = left + 'px';
+        actions.style.top = top + 'px';
+      }
+    }
+  };
+
+  overlay.addEventListener('pointerup', finishDrag);
+  overlay.addEventListener('pointercancel', finishDrag);
+})();
+
+// ── Rendering & Export Function ──
+function renderCroppedCircuitPNG(cropX, cropY, cropW, cropH, callback) {
+  cropW = Math.max(80, Math.round(cropW));
+  cropH = Math.max(80, Math.round(cropH));
+  const svg = document.getElementById('svg');
+  const clone = svg.cloneNode(true);
+
+  // Clean preview and helper elements
+  const cloneWorld = clone.getElementById ? clone.getElementById('world') : clone.querySelector('#world');
+  const tw = clone.querySelector('#twire'); if (tw) tw.remove();
+  const fp = clone.querySelector('#fpreview'); if (fp) fp.remove();
+  const sb = clone.querySelector('#selbox-rect'); if (sb) sb.remove();
+  const bg = clone.querySelector('#bg'); if (bg) bg.remove();
+
+  // Solid clean background for crisp notes
+  const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  bgRect.setAttribute('x', 0);
+  bgRect.setAttribute('y', 0);
+  bgRect.setAttribute('width', cropW);
+  bgRect.setAttribute('height', cropH);
+  bgRect.setAttribute('fill', '#ffffff');
+  clone.insertBefore(bgRect, clone.firstChild);
+
+  if (cloneWorld) {
+    cloneWorld.setAttribute('transform', `translate(${-cropX}, ${-cropY})`);
+  }
+  clone.setAttribute('viewBox', `0 0 ${cropW} ${cropH}`);
+  clone.setAttribute('width', cropW);
+  clone.setAttribute('height', cropH);
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const svgB64 = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgStr)));
+
+  const scale = 2.5; // High-resolution retina scale
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(cropW * scale);
+  canvas.height = Math.round(cropH * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, cropW, cropH);
+
+  const img = new Image();
+  img.onload = () => {
+    ctx.drawImage(img, 0, 0, cropW, cropH);
+    const dataUrl = canvas.toDataURL('image/png');
+    callback(dataUrl, cropW, cropH);
+  };
+  img.onerror = () => {
+    alert('Export-Fehler: Schaltungsbild konnte nicht gerendert werden.');
+  };
+  img.src = svgB64;
+}
+
+function sendToElectroNote(dataUrl, w, h) {
+  if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.electroNote) {
+    window.webkit.messageHandlers.electroNote.postMessage({
+      action: 'insertCircuit',
+      imageData: dataUrl,
+      width: w,
+      height: h
+    });
+  } else {
+    // Fallback in regular desktop browser
+    const a = document.createElement('a');
+    a.download = 'schaltung.png';
+    a.href = dataUrl;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+}
+
+function initElectroNoteBridge() {
+  const isEnote = !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.electroNote) ||
+    (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('app') === 'electronote');
+  if (isEnote) {
+    const btn = document.getElementById('btn-enote-insert');
+    if (btn) btn.style.display = 'inline-flex';
+  }
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initElectroNoteBridge);
+} else {
+  initElectroNoteBridge();
+}
 </script>
+
+<!-- ElectroNote Modal -->
+<div id="enote-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.65);z-index:9999;align-items:center;justify-content:center;backdrop-filter:blur(4px);padding:16px;">
+  <div style="background:#1e293b;border:1px solid #475569;border-radius:14px;box-shadow:0 24px 48px rgba(0,0,0,0.5);width:100%;max-width:440px;padding:22px;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <h3 style="font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;margin:0;">📋 In Notizheft einfügen</h3>
+      <button onclick="closeEnoteModal()" style="background:transparent;border:none;color:#94a3b8;font-size:20px;cursor:pointer;line-height:1;padding:4px;">✕</button>
+    </div>
+    <p style="font-size:13px;color:#cbd5e1;line-height:1.45;margin-bottom:16px;">Wähle, wie die Schaltung in deine Notizseite übernommen werden soll:</p>
+    
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button onclick="enoteExportAuto()" style="display:flex;align-items:center;gap:12px;background:#334155;border:1px solid #475569;border-radius:10px;padding:12px 14px;color:#fff;cursor:pointer;text-align:left;">
+        <span style="font-size:24px;">🎯</span>
+        <div>
+          <div style="font-weight:600;font-size:14px;color:#93c5fd;">Schaltung automatisch einpassen</div>
+          <div style="font-size:11.5px;color:#94a3b8;margin-top:2px;">Erkennt alle Bauteile/Leitungen und schneidet leere Ränder ab</div>
+        </div>
+      </button>
+
+      <button onclick="enoteStartSnipping()" style="display:flex;align-items:center;gap:12px;background:#334155;border:1px solid #475569;border-radius:10px;padding:12px 14px;color:#fff;cursor:pointer;text-align:left;">
+        <span style="font-size:24px;">✂️</span>
+        <div>
+          <div style="font-weight:600;font-size:14px;color:#86efac;">Bereich mit Stift / Finger wählen</div>
+          <div style="font-size:11.5px;color:#94a3b8;margin-top:2px;">Rechteck um den gewünschten Schaltungsteil aufziehen</div>
+        </div>
+      </button>
+
+      <button onclick="enoteExportViewport()" style="display:flex;align-items:center;gap:12px;background:#334155;border:1px solid #475569;border-radius:10px;padding:12px 14px;color:#fff;cursor:pointer;text-align:left;">
+        <span style="font-size:24px;">📱</span>
+        <div>
+          <div style="font-weight:600;font-size:14px;color:#fde047;">Aktuelle Ansicht übernehmen</div>
+          <div style="font-size:11.5px;color:#94a3b8;margin-top:2px;">Exakter Zoom- und Bildschirmausschnitt wie gerade sichtbar</div>
+        </div>
+      </button>
+    </div>
+
+    <div style="margin-top:18px;text-align:right;">
+      <button onclick="closeEnoteModal()" style="background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:#cbd5e1;padding:7px 16px;border-radius:7px;font-size:12.5px;cursor:pointer;">Abbrechen</button>
+    </div>
+  </div>
+</div>
+
+<!-- ElectroNote Snipping Overlay -->
+<div id="enote-snipping-overlay" style="display:none;position:fixed;inset:0;z-index:9990;cursor:crosshair;touch-action:none;user-select:none;">
+  <div style="position:absolute;top:14px;left:50%;transform:translateX(-50%);background:rgba(15,23,42,0.92);border:1px solid #3b82f6;border-radius:22px;padding:8px 18px;color:#fff;font-size:13px;font-weight:600;display:flex;align-items:center;gap:14px;box-shadow:0 6px 20px rgba(0,0,0,0.5);pointer-events:auto;font-family:system-ui,-apple-system,sans-serif;">
+    <span>✂️ Ziehe ein Rechteck um die gewünschte Schaltung</span>
+    <button onclick="cancelEnoteSnipping()" style="background:#ef4444;border:none;color:#fff;padding:4px 12px;border-radius:14px;font-size:11.5px;font-weight:700;cursor:pointer;">Abbrechen</button>
+  </div>
+  <svg id="enote-snip-svg" style="width:100%;height:100%;pointer-events:none;position:absolute;top:0;left:0;">
+    <rect id="enote-snip-dim-top" fill="rgba(0,0,0,0.45)"/>
+    <rect id="enote-snip-dim-bottom" fill="rgba(0,0,0,0.45)"/>
+    <rect id="enote-snip-dim-left" fill="rgba(0,0,0,0.45)"/>
+    <rect id="enote-snip-dim-right" fill="rgba(0,0,0,0.45)"/>
+    <rect id="enote-snip-box" fill="rgba(56,189,248,0.08)" stroke="#38bdf8" stroke-width="2.5" stroke-dasharray="6,4" rx="4"/>
+  </svg>
+  <div id="enote-snip-actions" style="display:none;position:absolute;gap:8px;pointer-events:auto;z-index:9995;font-family:system-ui,-apple-system,sans-serif;">
+    <button onclick="enoteConfirmSnipping()" style="background:#16a34a;border:1px solid #4ade80;color:#fff;padding:7px 15px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,0.4);display:flex;align-items:center;gap:6px;">✓ In Notiz einfügen</button>
+    <button onclick="enoteResetSnippingSelection()" style="background:#334155;border:1px solid #475569;color:#cbd5e1;padding:7px 12px;border-radius:8px;font-size:13px;cursor:pointer;">Neu ziehen</button>
+  </div>
+</div>
 </body>
 </html>
