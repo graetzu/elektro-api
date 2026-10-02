@@ -134,6 +134,8 @@ kbd { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3);
 #sidebar {
   width:185px; background:#fff; border-right:1px solid #cbd5e0;
   overflow-y:auto; flex-shrink:0; z-index:200;
+  -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+  touch-action: pan-y;
 }
 .s-head {
   padding:7px 12px 5px; font-size:10px; font-weight:700; text-transform:uppercase;
@@ -3017,6 +3019,14 @@ function drawPorts(g, comp) {
       'stroke-width':1.8, class:'port-c',
       'data-cid':comp.id, 'data-pi':i
     }, g);
+    // Vergrößerte unsichtbare Touch-Hitbox (mindestens 16px Radius) für zuverlässiges Treffen mit Finger & Stift
+    const hitR = Math.max(pR + 10, 16);
+    const hitC = mk('circle',{
+      cx:lx, cy:ly, r:hitR,
+      fill:'transparent', stroke:'none',
+      'pointer-events':'all', class:'port-c port-hitarea',
+      'data-cid':comp.id, 'data-pi':i
+    }, g);
     const off = pd.dir==='n'?-8: pd.dir==='s'?14: pd.dir==='w'?-10: 10;
     const attr = (pd.dir==='n'||pd.dir==='s')
       ? {x:lx+4,y:ly+off,'text-anchor':'start'}
@@ -3028,13 +3038,19 @@ function drawPorts(g, comp) {
     mk('text',{...attr,'font-size':8,fill:pd.color||'#374151','pointer-events':'none',
       ...(counterRot?{transform:counterRot}:{})},g)
       .textContent = portLabel;
-    c.addEventListener('pointerdown', e => {
+    const handlePortDown = e => {
       if (probeMode && simMode) { e.stopPropagation(); onProbePortDown(comp, i); return; }
+      // Stift-Unterstützung (Apple Pencil): Berühren eines Ports startet sofort das Leitungsverlegen
+      if (e.pointerType === 'pen' && mode === 'select' && !simMode) {
+        setMode('wire');
+      }
       if (mode==='wire') e.stopPropagation();
       if (mode==='bridge') { e.stopPropagation(); return; }
       onPortDown(comp, i, pd);
-    });
-    c.addEventListener('dblclick', e => {
+    };
+    c.addEventListener('pointerdown', handlePortDown);
+    hitC.addEventListener('pointerdown', handlePortDown);
+    const handleDblClick = e => {
       e.stopPropagation();
       const v = prompt('Anschluss-Name:', portLabel);
       if (v !== null) {
@@ -3042,7 +3058,9 @@ function drawPorts(g, comp) {
         comp.portLabels[i] = v;
         render();
       }
-    });
+    };
+    c.addEventListener('dblclick', handleDblClick);
+    hitC.addEventListener('dblclick', handleDblClick);
     c.addEventListener('pointerenter', () => {
       if (simMode && portPotMap) {
         const pot = portPotMap[comp.id+':'+i] || 0;
@@ -4313,7 +4331,14 @@ document.addEventListener('touchmove', e => {
   const dx = t.clientX - sbTouchDrag.startX;
   const dy = t.clientY - sbTouchDrag.startY;
   if (!sbTouchDrag.active) {
-    if (Math.hypot(dx, dy) < 10) return;
+    // Wenn die Bewegung überwiegend vertikal ist, will der Nutzer die Leiste scrollen!
+    // Touch-Drag sofort verwerfen, damit der Browser die Bauteilliste nativ und flüssig scrollt.
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 4) {
+      sbTouchDrag = null;
+      return;
+    }
+    // Bauteil-Drag erst aktivieren, wenn gezielt horizontal nach rechts (Richtung Zeichenfläche) gezogen wird
+    if (dx < 20 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
     sbTouchDrag.active = true;
     const d = D[sbTouchDrag.type];
     const ghost = document.createElement('div');
@@ -4322,12 +4347,14 @@ document.addEventListener('touchmove', e => {
     document.body.appendChild(ghost);
     sbTouchDrag.ghost = ghost;
   }
-  e.preventDefault();
-  const ghost = sbTouchDrag.ghost;
-  if (ghost) { ghost.style.left = t.clientX + 'px'; ghost.style.top = t.clientY + 'px'; }
-  const r = document.getElementById('canvas-wrap').getBoundingClientRect();
-  const over = t.clientX >= r.left && t.clientX <= r.right && t.clientY >= r.top && t.clientY <= r.bottom;
-  document.getElementById('canvas-wrap').style.outline = over ? '3px solid #3b82f6' : '';
+  if (sbTouchDrag && sbTouchDrag.active) {
+    e.preventDefault();
+    const ghost = sbTouchDrag.ghost;
+    if (ghost) { ghost.style.left = t.clientX + 'px'; ghost.style.top = t.clientY + 'px'; }
+    const r = document.getElementById('canvas-wrap').getBoundingClientRect();
+    const over = t.clientX >= r.left && t.clientX <= r.right && t.clientY >= r.top && t.clientY <= r.bottom;
+    document.getElementById('canvas-wrap').style.outline = over ? '3px solid #3b82f6' : '';
+  }
 }, { passive: false });
 
 document.addEventListener('touchend', e => {

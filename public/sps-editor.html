@@ -2,6 +2,7 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>SPS FBD Programmiereditor</title>
 <script>
 // Wird beim Bauen der Offline-APK auf true gesetzt (siehe index.html).
@@ -44,19 +45,23 @@ const OFFLINE_APP = false;
 html,body{height:100%;overflow:hidden;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;background:#e8e4dc;color:#1a1a1a}
 
 /* ── Toolbar ── */
-#toolbar{height:34px;background:linear-gradient(180deg,#d8d4cc,#c4c0b8);border-bottom:2px solid #808070;display:flex;align-items:center;padding:0 6px;gap:1px;flex-shrink:0;user-select:none}
-.tb-group{display:flex;align-items:center;gap:1px;padding:0 4px;border-right:1px solid #9c9888}
+#toolbar{height:36px;background:linear-gradient(180deg,#d8d4cc,#c4c0b8);border-bottom:2px solid #808070;display:flex;align-items:center;padding:0 6px;gap:2px;flex-shrink:0;user-select:none}
+.tb-group{display:flex;align-items:center;gap:2px;padding:0 4px;border-right:1px solid #9c9888}
 .tb-group:last-child{border-right:none;margin-left:auto}
-.tb-btn{padding:3px 10px;background:linear-gradient(180deg,#ece8e0,#d8d4cc);border:1px solid #9c9888;border-radius:2px;cursor:pointer;font-size:11px;font-family:inherit;white-space:nowrap}
+.tb-btn{padding:4px 11px;min-height:28px;background:linear-gradient(180deg,#ece8e0,#d8d4cc);border:1px solid #9c9888;border-radius:3px;cursor:pointer;font-size:11px;font-family:inherit;white-space:nowrap}
 .tb-btn:hover{background:linear-gradient(180deg,#f8f4ec,#ece8e0)}
 .tb-btn:active,.tb-btn.active{background:linear-gradient(180deg,#c8c4bc,#d4d0c8);box-shadow:inset 1px 1px 2px rgba(0,0,0,.2)}
 .tb-info{font-size:11px;color:#444;padding:0 8px}
 
 /* ── Layout ── */
-#app{display:flex;height:calc(100vh - 34px)}
+#app{display:flex;height:calc(100vh - 36px)}
 
 /* ── Sidebar ── */
-#sidebar{width:170px;background:#f0ede6;border-right:2px solid #c0bdb5;overflow-y:auto;flex-shrink:0;user-select:none}
+#sidebar{width:170px;background:#f0ede6;border-right:2px solid #c0bdb5;overflow-y:auto;flex-shrink:0;user-select:none;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y}
+.port-touch-target{cursor:crosshair;-webkit-tap-highlight-color:transparent}
+.port-snap-glow{animation:port-pulse 0.8s infinite alternate}
+@keyframes port-pulse{from{filter:drop-shadow(0 0 2px #2563eb);stroke-width:2.5px}to{filter:drop-shadow(0 0 7px #3b82f6);stroke-width:3.5px}}
+#touch-hint{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:#1e293b;color:#f8fafc;padding:6px 16px;border-radius:20px;font-size:11px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,0.3);z-index:9000;display:none;pointer-events:none;align-items:center;gap:6px}
 .sb-section{}
 .sb-head{padding:5px 8px;background:linear-gradient(180deg,#dcd8d0,#ccc8c0);border-bottom:1px solid #b0aca4;cursor:pointer;font-size:11px;font-weight:700;color:#333;display:flex;align-items:center;gap:5px}
 .sb-head:hover{background:linear-gradient(180deg,#e8e4dc,#d8d4cc)}
@@ -635,21 +640,36 @@ function drawBlock(b){
   const numIns = b.inputCount||d.ins;
   for(let i=0;i<numIns;i++){
     const py=b.y+inPortY(b,i);
-    const pc=mkEl('circle',{cx:b.x,cy:py,r:5,fill:'#eff6ff',stroke:'#1d4ed8',
-      'stroke-width':1.5,cursor:'crosshair','pointer-events':'all'},g);
+    const isSnapTarget = snapPortTarget && snapPortTarget.blockId===b.id && snapPortTarget.portIdx===i;
+    const pc=mkEl('circle',{cx:b.x,cy:py,r:isSnapTarget?7:5,
+      fill:isSnapTarget?'#bbf7d0':'#eff6ff',
+      stroke:isSnapTarget?'#16a34a':'#1d4ed8',
+      'stroke-width':isSnapTarget?2.5:1.5,cursor:'crosshair','pointer-events':'all'},g);
     pc.dataset.portType='in'; pc.dataset.portIdx=i; pc.dataset.blkId=b.id;
+    // Unsichtbare, vergrößerte Touch-Hitbox (16px Radius) für Finger & Stift
+    const ph=mkEl('circle',{cx:b.x,cy:py,r:16,fill:'transparent',stroke:'none',
+      cursor:'crosshair','pointer-events':'all',class:'port-touch-target'},g);
+    ph.dataset.portType='in'; ph.dataset.portIdx=i; ph.dataset.blkId=b.id;
     // Dot if connected
     if(prog.conns.some(c=>c.toId===b.id&&c.toPort===i)){
-      mkEl('circle',{cx:b.x,cy:py,r:2.5,fill:'#1d4ed8','pointer-events':'none'},g);
+      mkEl('circle',{cx:b.x,cy:py,r:2.5,fill:isSnapTarget?'#16a34a':'#1d4ed8','pointer-events':'none'},g);
     }
   }
 
   // Output port (right side)
   if(d.outs>0){
     const outX = d.invOut ? b.x+w+10 : b.x+w;
-    const pc=mkEl('circle',{cx:outX,cy:b.y+outPortY(b),r:5,fill:'#eff6ff',stroke:'#1d4ed8',
-      'stroke-width':1.5,cursor:'crosshair','pointer-events':'all'},g);
+    const isSelOut = selectedOutPort && selectedOutPort.blockId===b.id;
+    const pc=mkEl('circle',{cx:outX,cy:b.y+outPortY(b),r:isSelOut?7.5:5,
+      fill:isSelOut?'#fef08a':'#eff6ff',
+      stroke:isSelOut?'#ca8a04':'#1d4ed8',
+      'stroke-width':isSelOut?2.5:1.5,cursor:'crosshair','pointer-events':'all',
+      class:isSelOut?'port-snap-glow':''},g);
     pc.dataset.portType='out'; pc.dataset.blkId=b.id;
+    // Unsichtbare, vergrößerte Touch-Hitbox (16px Radius)
+    const ph=mkEl('circle',{cx:outX,cy:b.y+outPortY(b),r:16,fill:'transparent',stroke:'none',
+      cursor:'crosshair','pointer-events':'all',class:'port-touch-target'},g);
+    ph.dataset.portType='out'; ph.dataset.blkId=b.id;
     if(prog.conns.some(c=>c.fromId===b.id)){
       mkEl('circle',{cx:outX,cy:b.y+outPortY(b),r:2.5,fill:'#1d4ed8','pointer-events':'none'},g);
     }
@@ -845,8 +865,50 @@ function updateSpslive(){
   }
 }
 
-// ── Drag from sidebar ─────────────────────────────────────────────────────────
+// ── Drag & Tap from sidebar ───────────────────────────────────────────────────
 let sbDragData=null;
+let sbTouchStart=null;
+let selectedOutPort=null;
+let snapPortTarget=null;
+let activePointers=new Map();
+let pinchState=null;
+
+function findSnapInputPort(clientX, clientY, excludeBlockId, maxDist = 38) {
+  const p = svgPt(clientX, clientY);
+  let best = null, bestDist = maxDist;
+  for (const b of prog.blocks) {
+    if (b.id === excludeBlockId) continue;
+    const d = BD[b.type];
+    if (!d) continue;
+    const numIns = b.inputCount || d.ins;
+    for (let i = 0; i < numIns; i++) {
+      const ip = portAbs(b, false, i);
+      const dist = Math.hypot(p.x - ip.x, p.y - ip.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = { blockId: b.id, portIdx: i, x: ip.x, y: ip.y };
+      }
+    }
+  }
+  return best;
+}
+
+function showTouchHint(msg) {
+  let h = document.getElementById('touch-hint');
+  if (!h) {
+    h = document.createElement('div');
+    h.id = 'touch-hint';
+    document.body.appendChild(h);
+  }
+  h.innerHTML = msg;
+  h.style.display = 'flex';
+}
+
+function hideTouchHint() {
+  const h = document.getElementById('touch-hint');
+  if (h) h.style.display = 'none';
+}
+
 document.querySelectorAll('.sb-item').forEach(el=>{
   el.addEventListener('dragstart',e=>{
     sbDragData={ type:el.dataset.type, port:el.dataset.port||null };
@@ -854,21 +916,75 @@ document.querySelectorAll('.sb-item').forEach(el=>{
     e.dataTransfer.setData('text/plain','block');
   });
   el.addEventListener('dragend',()=>{ sbDragData=null; });
-  // Tap-Fallback für Touch/Stift: natives HTML5-Drag&Drop feuert auf iOS/touch überhaupt nicht,
-  // ohne das ließ sich in der SPS-Programmierung per Touch kein einziger Baustein platzieren.
-  // Antippen setzt den Baustein direkt in die Mitte der aktuellen Ansicht (mit kleinem
-  // Zufalls-Versatz, damit mehrfaches Antippen nicht exakt übereinander landet).
+
+  // Touch / Stift: Saubere Trennung zwischen Scrollen (Wischen nach oben/unten) und Platzieren/Ziehen
   el.addEventListener('pointerdown', e=>{
-    if (e.pointerType==='mouse') return; // Maus nutzt weiterhin natives Drag&Drop
-    e.stopPropagation();
-    const r = cv.getBoundingClientRect();
-    const cx = r.left + r.width/2 + (Math.random()*60-30);
-    const cy = r.top + r.height/2 + (Math.random()*60-30);
-    const p = svgPt(cx, cy);
-    const type = el.dataset.type, port = el.dataset.port||null;
-    addBlock(type, p.x-bW({type})/2, p.y-15, port);
+    if (e.pointerType==='mouse') return;
+    sbTouchStart = {
+      type: el.dataset.type,
+      port: el.dataset.port || null,
+      startX: e.clientX,
+      startY: e.clientY,
+      startTime: Date.now(),
+      ghost: null,
+      isDragging: false
+    };
   });
 });
+
+document.addEventListener('pointermove', e => {
+  if (!sbTouchStart) return;
+  const dx = e.clientX - sbTouchStart.startX;
+  const dy = e.clientY - sbTouchStart.startY;
+  if (!sbTouchStart.isDragging) {
+    // Wenn vertikal gewischt wird (|dy| > |dx|): Nutzer scrollt die Baustein-Seitenleiste!
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 5) {
+      sbTouchStart = null;
+      return;
+    }
+    // Erst wenn gezielt nach rechts auf die Zeichenfläche gezogen wird, Drag-Ghost aktivieren
+    if (dx > 20 && dx > Math.abs(dy) * 1.2) {
+      sbTouchStart.isDragging = true;
+      const ghost = document.createElement('div');
+      ghost.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;background:#dbeafe;border:2px solid #2563eb;border-radius:4px;padding:4px 10px;font-size:11px;font-weight:700;color:#1e3a8a;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.25);transform:translate(-50%,-50%);';
+      ghost.textContent = sbTouchStart.port ? (sbTouchStart.type.toUpperCase() + ' ' + sbTouchStart.port) : (BD[sbTouchStart.type]?.label || sbTouchStart.type);
+      document.body.appendChild(ghost);
+      sbTouchStart.ghost = ghost;
+    }
+  }
+  if (sbTouchStart && sbTouchStart.isDragging && sbTouchStart.ghost) {
+    sbTouchStart.ghost.style.left = e.clientX + 'px';
+    sbTouchStart.ghost.style.top = e.clientY + 'px';
+  }
+});
+
+document.addEventListener('pointerup', e => {
+  if (!sbTouchStart) return;
+  const { type, port, startX, startY, startTime, ghost, isDragging } = sbTouchStart;
+  sbTouchStart = null;
+  if (ghost) ghost.remove();
+
+  if (isDragging) {
+    const cr = cv.getBoundingClientRect();
+    if (e.clientX >= cr.left && e.clientX <= cr.right && e.clientY >= cr.top && e.clientY <= cr.bottom) {
+      const p = svgPt(e.clientX, e.clientY);
+      addBlock(type, p.x - bW({ type }) / 2, p.y - 15, port);
+    }
+    return;
+  }
+
+  // Antippen ohne Verschieben (< 8px und < 350ms): Baustein in die Bildmitte einfügen
+  const dist = Math.hypot(e.clientX - startX, e.clientY - startY);
+  const time = Date.now() - startTime;
+  if (dist < 8 && time < 350) {
+    const r = cv.getBoundingClientRect();
+    const cx = r.left + r.width / 2 + (Math.random() * 60 - 30);
+    const cy = r.top + r.height / 2 + (Math.random() * 60 - 30);
+    const p = svgPt(cx, cy);
+    addBlock(type, p.x - bW({ type }) / 2, p.y - 15, port);
+  }
+});
+
 cv.addEventListener('dragover',e=>{ e.preventDefault(); e.dataTransfer.dropEffect='copy'; });
 cv.addEventListener('drop',e=>{
   e.preventDefault();
@@ -907,36 +1023,78 @@ function startBlkDrag(id,e){
   render();
 }
 
-// ── Connection drawing ────────────────────────────────────────────────────────
+// ── Connection drawing & Touch-Gesten ──────────────────────────────────────────
 cv.addEventListener('pointerdown',e=>{
   if(e.button!==0) return;
   hideCtx();
+
+  // Multi-Touch tracking für 2-Finger-Pinch/Pan
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePointers.size === 2) {
+    const pts = [...activePointers.values()];
+    const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    const mx = (pts[0].x + pts[1].x) / 2, my = (pts[0].y + pts[1].y) / 2;
+    pinchState = { dist, vx: vp.x, vy: vp.y, vz: vp.z, mx, my };
+    connDrag = null; dragBlk = null; panDrag = null; snapPortTarget = null;
+    gPreview.innerHTML = '';
+    cv.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+
   const tgt=e.target;
 
-  // Port click → start connection
+  // Port click (oder Treffer auf unsichtbare Touch-Hitbox)
   if(tgt.dataset.portType){
     e.stopPropagation();
     const bid=tgt.dataset.blkId, pt=tgt.dataset.portType;
     const b=prog.blocks.find(x=>x.id===bid);
     if(!b) return;
+
     if(pt==='out'){
+      // Wenn bereits derselbe Ausgang ausgewählt ist, abwählen
+      if (selectedOutPort && selectedOutPort.blockId === bid) {
+        selectedOutPort = null;
+        hideTouchHint();
+        render();
+        return;
+      }
       const op=portAbs(b,true,0);
-      connDrag={ fromId:bid, x:op.x, y:op.y };
+      connDrag={ fromId:bid, x:op.x, y:op.y, sx:e.clientX, sy:e.clientY, startTime:Date.now() };
       cv.setPointerCapture(e.pointerId);
+      selectedOutPort = { blockId: bid };
+      showTouchHint('⚡ Ausgang gewählt: Tippe auf einen Eingang zum Verbinden (oder ESC zum Abbrechen)');
+      render();
     } else {
-      // Drag from input: remove existing connection first
-      const ci=parseInt(tgt.dataset.portIdx||0);
-      prog.conns=prog.conns.filter(c=>!(c.toId===bid&&c.toPort===ci));
-      // Find what was connected to this input
-      const old=prog.conns.find(c=>c.toId===bid&&c.toPort===ci);
-      render(); broadcastProg();
+      const pi=parseInt(tgt.dataset.portIdx||0);
+      // Wenn zuvor ein Ausgang gewählt war: JETZT VERBINDEN! (Tap-to-Connect)
+      if (selectedOutPort && selectedOutPort.blockId !== bid) {
+        prog.conns = prog.conns.filter(c => !(c.toId === bid && c.toPort === pi));
+        prog.conns.push({ id: 'C' + Date.now(), fromId: selectedOutPort.blockId, fromPort: 0, toId: bid, toPort: pi });
+        selectedOutPort = null;
+        hideTouchHint();
+        render();
+        broadcastProg();
+        return;
+      }
+      // Klick auf Eingang: bestehende Verbindung trennen
+      prog.conns=prog.conns.filter(c=>!(c.toId===bid&&c.toPort===pi));
+      selectedOutPort = null;
+      hideTouchHint();
+      render();
+      broadcastProg();
     }
     return;
   }
 
   // Background click → deselect or pan
   if(tgt.id==='cvbg'||tgt.tagName==='svg'){
-    selId=null; render();
+    selId=null;
+    if (selectedOutPort) {
+      selectedOutPort = null;
+      hideTouchHint();
+    }
+    render();
     const p=svgPt(e.clientX,e.clientY);
     panDrag={ sx:e.clientX, sy:e.clientY, vx:vp.x, vy:vp.y };
     cv.setPointerCapture(e.pointerId);
@@ -945,6 +1103,21 @@ cv.addEventListener('pointerdown',e=>{
 });
 
 cv.addEventListener('pointermove',e=>{
+  // Multi-Touch Pinch-to-Zoom & Pan
+  if (pinchState && activePointers.size === 2) {
+    activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = [...activePointers.values()];
+    const newDist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    const newMx = (pts[0].x + pts[1].x) / 2, newMy = (pts[0].y + pts[1].y) / 2;
+    const factor = newDist / (pinchState.dist || 1);
+    const nz = Math.max(0.2, Math.min(3, pinchState.vz * factor));
+    vp.z = nz;
+    vp.x = newMx - (pinchState.mx - pinchState.vx) * (nz / pinchState.vz) + (newMx - pinchState.mx);
+    vp.y = newMy - (pinchState.my - pinchState.vy) * (nz / pinchState.vz) + (newMy - pinchState.my);
+    applyVP();
+    return;
+  }
+
   if(dragBlk){
     const p=svgPt(e.clientX,e.clientY);
     const b=prog.blocks.find(x=>x.id===dragBlk.id);
@@ -953,15 +1126,30 @@ cv.addEventListener('pointermove',e=>{
   }
   if(connDrag){
     const p=svgPt(e.clientX,e.clientY);
-    connDrag.x=p.x; connDrag.y=p.y;
-    // Draw preview wire
+    // Intelligentes Proximity-Snapping: nächsten passenden Eingang im Umkreis suchen
+    const snap = findSnapInputPort(e.clientX, e.clientY, connDrag.fromId, 38);
+    snapPortTarget = snap;
+    const targetX = snap ? snap.x : p.x;
+    const targetY = snap ? snap.y : p.y;
+    connDrag.x = targetX; connDrag.y = targetY;
+
+    // Vorschau-Leitung zeichnen
     const fb=prog.blocks.find(x=>x.id===connDrag.fromId);
     if(fb){
       gPreview.innerHTML='';
       const fp=portAbs(fb,true,0);
-      const dx=Math.max(30,(p.x-fp.x)*0.5);
-      mkEl('path',{d:`M${fp.x},${fp.y} C${fp.x+dx},${fp.y} ${p.x-dx},${p.y} ${p.x},${p.y}`,
-        fill:'none',stroke:'#1a66cc','stroke-width':1.5,'stroke-dasharray':'5 3','pointer-events':'none'},gPreview);
+      const dx=Math.max(30,(targetX-fp.x)*0.5);
+      mkEl('path',{d:`M${fp.x},${fp.y} C${fp.x+dx},${fp.y} ${targetX-dx},${targetY} ${targetX},${targetY}`,
+        fill:'none',stroke:snap?'#16a34a':'#1a66cc','stroke-width':snap?2.5:1.8,'stroke-dasharray':snap?'none':'5 3','pointer-events':'none'},gPreview);
+
+      // Bei Snapping: grüner Docking-Ring am Ziel-Eingang
+      if (snap) {
+        mkEl('circle', {
+          cx: snap.x, cy: snap.y, r: 8,
+          fill: '#bbf7d0', stroke: '#16a34a', 'stroke-width': 2.5,
+          'pointer-events': 'none'
+        }, gPreview);
+      }
     }
     return;
   }
@@ -972,7 +1160,13 @@ cv.addEventListener('pointermove',e=>{
   }
 });
 
+function finishSpsPointer(e) {
+  activePointers.delete(e.pointerId);
+  if (activePointers.size < 2) pinchState = null;
+}
+
 cv.addEventListener('pointerup',e=>{
+  finishSpsPointer(e);
   if(dragBlk){
     // Kaum Bewegung zwischen Down und Up = Tippen, kein Ziehen -- bei einem Eingabe-Baustein
     // (im Testmodus) dessen Zustand umschalten. Eigene Distanzmessung statt 'click', das bei
@@ -990,28 +1184,62 @@ cv.addEventListener('pointerup',e=>{
     dragBlk=null; broadcastProg();
   }
   if(panDrag){ panDrag=null; }
+
   if(connDrag){
-    // Check if released on an input port
-    const els=document.elementsFromPoint(e.clientX,e.clientY);
+    const dist = Math.hypot(e.clientX - connDrag.sx, e.clientY - connDrag.sy);
+    const isQuickTap = dist < 8 && (Date.now() - connDrag.startTime) < 350;
+
+    if (isQuickTap) {
+      // Ausgang nur angetippt (Tap-to-Connect aktiv lassen)
+      connDrag = null;
+      snapPortTarget = null;
+      gPreview.innerHTML = '';
+      render();
+      return;
+    }
+
+    // Wenn gezogen wurde: Snapping prüfen oder Ziel-Element suchen
+    const snap = snapPortTarget || findSnapInputPort(e.clientX, e.clientY, connDrag.fromId, 40);
     let connected=false;
-    for(const el of els){
-      if(el.dataset.portType==='in'){
-        const bid=el.dataset.blkId, pi=parseInt(el.dataset.portIdx||0);
-        const tb=prog.blocks.find(b=>b.id===bid);
-        if(tb && bid!==connDrag.fromId){
-          // Remove existing conn on this input port
-          prog.conns=prog.conns.filter(c=>!(c.toId===bid&&c.toPort===pi));
-          // Check for cycles (simple: can't connect output to its own ancestors)
-          prog.conns.push({ id:'C'+Date.now(), fromId:connDrag.fromId, fromPort:0, toId:bid, toPort:pi });
-          connected=true;
+    if (snap && snap.blockId !== connDrag.fromId) {
+      prog.conns = prog.conns.filter(c => !(c.toId === snap.blockId && c.toPort === snap.portIdx));
+      prog.conns.push({ id: 'C' + Date.now(), fromId: connDrag.fromId, fromPort: 0, toId: snap.blockId, toPort: snap.portIdx });
+      connected = true;
+      selectedOutPort = null;
+      hideTouchHint();
+    } else {
+      const els=document.elementsFromPoint(e.clientX,e.clientY);
+      for(const el of els){
+        if(el.dataset.portType==='in'){
+          const bid=el.dataset.blkId, pi=parseInt(el.dataset.portIdx||0);
+          const tb=prog.blocks.find(b=>b.id===bid);
+          if(tb && bid!==connDrag.fromId){
+            prog.conns=prog.conns.filter(c=>!(c.toId===bid&&c.toPort===pi));
+            prog.conns.push({ id:'C'+Date.now(), fromId:connDrag.fromId, fromPort:0, toId:bid, toPort:pi });
+            connected=true;
+            selectedOutPort = null;
+            hideTouchHint();
+          }
+          break;
         }
-        break;
       }
     }
+
     connDrag=null;
+    snapPortTarget=null;
     gPreview.innerHTML='';
     render(); if(connected) broadcastProg();
   }
+});
+
+cv.addEventListener('pointercancel', e=>{
+  finishSpsPointer(e);
+  connDrag=null;
+  dragBlk=null;
+  panDrag=null;
+  snapPortTarget=null;
+  gPreview.innerHTML='';
+  render();
 });
 
 // Scroll to zoom
@@ -1032,7 +1260,7 @@ document.addEventListener('keydown',e=>{
     if(document.activeElement.tagName==='INPUT'||document.activeElement.tagName==='SELECT') return;
     deleteSelected();
   }
-  if(e.key==='Escape'){ selId=null; connDrag=null; gPreview.innerHTML=''; render(); }
+  if(e.key==='Escape'){ selId=null; connDrag=null; selectedOutPort=null; snapPortTarget=null; hideTouchHint(); gPreview.innerHTML=''; render(); }
 });
 
 function deleteSelected(){
