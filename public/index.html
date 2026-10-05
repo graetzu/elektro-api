@@ -218,6 +218,8 @@ kbd { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3);
       <button class="t-btn" onclick="delSel()">✕ Löschen</button>
       <button class="t-btn" onclick="clearAll()">🗑 Neu</button>
       <select class="t-btn" id="tpl-select" onchange="loadTemplate(this.value,this)" title="Vorlage laden"><option value="">📋 Vorlage…</option></select>
+      <div class="t-sep"></div>
+      <button class="t-btn" id="btn-vde-nav" onclick="openVdeSimulatorOverlay()" style="background:linear-gradient(135deg,#0284c7,#0369a1);border:1px solid #38bdf8;color:#fff;font-weight:700" title="VDE 0100/0105 Mess- und Prüfsimulator öffnen">⚡ VDE-Messung</button>
       <span style="flex:1"></span>
       <span id="es-username" style="font-size:11px;color:#9ca3af;padding:0 6px;white-space:nowrap"></span>
       <a id="es-admin-link" href="/admin.html" class="t-btn" style="display:none;text-decoration:none;color:#93c5fd">🛠 Admin</a>
@@ -5183,6 +5185,20 @@ function closeSpsEditorOverlay() {
   document.getElementById('sps-editor-frame').src = 'about:blank';
 }
 
+function openVdeSimulatorOverlay() {
+  const overlay = document.getElementById('vde-simulator-overlay');
+  const frame = document.getElementById('vde-simulator-frame');
+  frame.src = 'vde/index.html';
+  overlay.style.display = 'flex';
+}
+
+function closeVdeSimulatorOverlay() {
+  const overlay = document.getElementById('vde-simulator-overlay');
+  const frame = document.getElementById('vde-simulator-frame');
+  overlay.style.display = 'none';
+  frame.src = 'about:blank';
+}
+
 function setupSpsChannel(comp) {
   const cid = comp.id;
   if (spsChannels[cid]) return;  // already set up
@@ -6007,6 +6023,15 @@ global.ElektroSim={simulate, sprReading, ANY_L, POT_N:N, POT_PE:PE, POT_L1:L1, P
     <button onclick="closeSpsEditorOverlay()" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:4px 12px;border-radius:5px;cursor:pointer;font-size:12px">← Zurück zum Plan</button>
   </div>
   <iframe id="sps-editor-frame" style="flex:1;border:none;width:100%"></iframe>
+</div>
+
+<!-- ── VDE-Simulator Overlay (VDE 0100/0105 Prüfgerät & Messlabor) ──────── -->
+<div id="vde-simulator-overlay" style="display:none;position:fixed;inset:0;background:#0f172a;z-index:9500;flex-direction:column">
+  <div style="height:38px;flex-shrink:0;background:#0f172a;border-bottom:1px solid #334155;display:flex;align-items:center;padding:0 10px;gap:12px;box-shadow:0 2px 8px #0005">
+    <button onclick="closeVdeSimulatorOverlay()" style="background:#1e293b;border:1px solid #475569;color:#f8fafc;padding:4px 12px;border-radius:5px;cursor:pointer;font-size:12px;font-weight:600">← Zurück zum Plan</button>
+    <span style="color:#38bdf8;font-size:12px;font-weight:700">⚡ VDE 0100/0105 Prüfsimulator</span>
+  </div>
+  <iframe id="vde-simulator-frame" style="flex:1;border:none;width:100%;height:100%" allow="clipboard-read; clipboard-write"></iframe>
 </div>
 
 <!-- ── Server Save/Load Modal ─────────────────────────────────────── -->
