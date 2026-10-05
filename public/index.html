@@ -220,6 +220,7 @@ kbd { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3);
       <select class="t-btn" id="tpl-select" onchange="loadTemplate(this.value,this)" title="Vorlage laden"><option value="">📋 Vorlage…</option></select>
       <div class="t-sep"></div>
       <button class="t-btn" id="btn-vde-nav" onclick="openVdeSimulatorOverlay()" style="background:linear-gradient(135deg,#0284c7,#0369a1);border:1px solid #38bdf8;color:#fff;font-weight:700" title="VDE 0100/0105 Mess- und Prüfsimulator öffnen">⚡ VDE-Messung</button>
+      <button class="t-btn" id="btn-sps-open" onclick="openSelectedSps()" style="background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#fff;font-weight:700;border:1px solid #60a5fa" title="SPS Programmiereditor (FBD) öffnen">✎ SPS-Editor</button>
       <span style="flex:1"></span>
       <span id="es-username" style="font-size:11px;color:#9ca3af;padding:0 6px;white-space:nowrap"></span>
       <a id="es-admin-link" href="/admin.html" class="t-btn" style="display:none;text-decoration:none;color:#93c5fd">🛠 Admin</a>
@@ -2649,16 +2650,32 @@ function drawSps(g, comp) {
   mk('circle',{cx:6,cy:31,r:3,fill:is24?'#1f2937':'#1e3a8a'},g);
   mk('text',{x:11,y:22,'font-size':4.5,fill:'#374151'},g).textContent=is24?'L+':'L';
   mk('text',{x:11,y:32,'font-size':4.5,fill:'#374151'},g).textContent=is24?'M':'N';
-  // LCD
-  mk('rect',{x:14,y:13,width:102,height:46,fill:broken?'#1f2937':'#0f1f3d',stroke:'#374151','stroke-width':1,rx:2},g);
-  mk('rect',{x:16,y:15,width:98,height:42,fill:broken?'#111827':'#152b52',rx:1},g);
+  // LCD Display (interaktiver Bereich zum Öffnen des SPS-Programmiereditors)
+  const lcdG = mk('g',{cursor:'pointer',class:'sps-lcd-touch'},g);
+  mk('rect',{x:14,y:13,width:102,height:46,fill:broken?'#1f2937':'#0f1f3d',stroke:broken?'#dc2626':'#3b82f6','stroke-width':1.5,rx:3},lcdG);
+  mk('rect',{x:16,y:15,width:98,height:42,fill:broken?'#111827':'#152b52',rx:2},lcdG);
   if (broken) {
-    mk('text',{x:65,y:30,'text-anchor':'middle','font-size':11,fill:'#f87171','font-weight':'bold','font-family':'monospace'},g).textContent='⚠ DEFEKT';
-    mk('text',{x:65,y:44,'text-anchor':'middle','font-size':5.5,fill:'#fca5a5','font-family':'monospace'},g).textContent='Überspannung 230V AC';
+    mk('text',{x:65,y:28,'text-anchor':'middle','font-size':10,fill:'#f87171','font-weight':'bold','font-family':'monospace'},lcdG).textContent='⚠ DEFEKT';
+    mk('text',{x:65,y:40,'text-anchor':'middle','font-size':5.5,fill:'#fca5a5','font-family':'monospace'},lcdG).textContent='Überspannung 230V AC';
+    mk('text',{x:65,y:50,'text-anchor':'middle','font-size':5,fill:'#f87171','font-weight':'bold'},lcdG).textContent='(Klick: Reset)';
   } else {
-    mk('text',{x:65,y:32,'text-anchor':'middle','font-size':13,fill:'#60a5fa','font-weight':'bold','font-family':'monospace'},g).textContent='SPS';
-    mk('text',{x:65,y:44,'text-anchor':'middle','font-size':6,fill:'#93c5fd','font-family':'monospace'},g).textContent=is24?'12/8 24V DC':'12/8 230V AC';
+    mk('text',{x:65,y:28,'text-anchor':'middle','font-size':11,fill:'#60a5fa','font-weight':'bold','font-family':'monospace'},lcdG).textContent='SPS 12/8';
+    mk('text',{x:65,y:38,'text-anchor':'middle','font-size':5.5,fill:'#93c5fd','font-family':'monospace'},lcdG).textContent=is24?'24V DC Version':'230V AC Version';
+    // Auffälliger Button auf dem Display
+    mk('rect',{x:22,y:43,width:86,height:11,fill:'#2563eb',rx:2,stroke:'#93c5fd','stroke-width':0.8},lcdG);
+    mk('text',{x:65,y:51,'text-anchor':'middle','font-size':6,fill:'#ffffff','font-weight':'bold'},lcdG).textContent='✎ FBD-Editor öffnen';
   }
+  const handleLcdOpen = e => {
+    e.stopPropagation();
+    if (broken) {
+      if (simState[comp.id]) simState[comp.id].broken = false;
+      runSim();
+    } else {
+      openSpsEditor(comp);
+    }
+  };
+  lcdG.addEventListener('pointerdown', handleLcdOpen);
+  lcdG.addEventListener('click', handleLcdOpen);
   // Navigation wheel
   mk('rect',{x:121,y:14,width:30,height:44,fill:'#d1d5db',stroke:'#9ca3af','stroke-width':0.5,rx:2},g);
   mk('circle',{cx:136,cy:36,r:10,fill:'#9ca3af',stroke:'#6b7280','stroke-width':1},g);
@@ -3474,13 +3491,22 @@ function render() {
         render(); return;
       }
 
-      // Double-click detection via timing (browser dblclick breaks after render())
-      if (!isPort && !comp.def.isCable && now - lastClickTime < 350 && lastClickId === comp.id) {
-        lastClickTime = 0; lastClickId = null;
-        if (comp.type === 'sps' || comp.type === 'sps24') { openSpsEditor(comp); return; }
-        const v = prompt('Beschriftung:', comp.label || comp.def.label);
-        if (v !== null) { comp.label = v; render(); }
-        return;
+      // Double-click or tap on already selected SPS → open editor
+      const isSpsComp = comp.type === 'sps' || comp.type === 'sps24';
+      if (!isPort && !comp.def.isCable) {
+        const isQuickDoubleTap = (now - lastClickTime < 650 && lastClickId === comp.id);
+        const isTapOnSelectedSps = isSpsComp && (sel === comp.id);
+        if (isSpsComp && (isQuickDoubleTap || isTapOnSelectedSps)) {
+          lastClickTime = 0; lastClickId = null;
+          openSpsEditor(comp);
+          return;
+        }
+        if (isQuickDoubleTap && !isSpsComp) {
+          lastClickTime = 0; lastClickId = null;
+          const v = prompt('Beschriftung:', comp.label || comp.def.label);
+          if (v !== null) { comp.label = v; render(); }
+          return;
+        }
       }
       lastClickTime = now; lastClickId = comp.id;
       const p = svgPt(e);
@@ -3769,6 +3795,11 @@ function render() {
 
   scheduleAutoSave();
   updateCompColorPanel();
+  const btnSps = document.getElementById('btn-sps-open');
+  if (btnSps) {
+    const hasSps = comps.some(c => c.type === 'sps' || c.type === 'sps24');
+    btnSps.style.display = hasSps ? 'inline-flex' : 'none';
+  }
   applyViewport();
 }
 
@@ -4964,11 +4995,15 @@ function handleSimClick(comp) {
       simState[comp.id] = { ...s, crossed: !s.crossed }; break;
     case 'bewegungsmelder':
       simState[comp.id] = { ...s, triggered: !s.triggered }; break;
+    case 'sps':
     case 'sps24':
-      // Defekt (falsche Spannung) → per Klick "austauschen" (Reset)
-      if (s.broken) simState[comp.id] = { ...s, broken: false };
-      else return;
-      break;
+      if (comp.type === 'sps24' && s.broken) {
+        simState[comp.id] = { ...s, broken: false };
+        runSim();
+      } else {
+        openSpsEditor(comp);
+      }
+      return;
     default: return; // Kein Klickhandler für diesen Typ
   }
   runSim();
@@ -5174,15 +5209,36 @@ function openSpsEditor(comp) {
   const frame = document.getElementById('sps-editor-frame');
   // Offline-App bündelt echte Dateien ohne den .html-losen Cloudflare-Rewrite der
   // Live-Seite — dort braucht es die Endung, online bleibt die kanonische URL.
-  frame.src = (OFFLINE_APP ? 'sps-editor.html' : 'sps-editor') + '?id=' + comp.id;
+  frame.src = 'sps-editor.html?id=' + comp.id;
   overlay.style.display = 'flex';
   setupSpsChannel(comp);
   startSpsSimBroadcast();
 }
 
+function openSelectedSps() {
+  let c = comps.find(x => x.id === sel);
+  if (!c || (c.type !== 'sps' && c.type !== 'sps24')) {
+    c = comps.find(x => x.type === 'sps' || x.type === 'sps24');
+  }
+  if (c) {
+    openSpsEditor(c);
+  } else {
+    alert('Bitte ziehe zuerst eine SPS aus der Seitenleiste (Bereich "Steuerung") auf deinen Schaltplan.');
+  }
+}
+
 function closeSpsEditorOverlay() {
   document.getElementById('sps-editor-overlay').style.display = 'none';
   document.getElementById('sps-editor-frame').src = 'about:blank';
+  comps.forEach(c => {
+    if (c.type === 'sps' || c.type === 'sps24') {
+      try {
+        const saved = localStorage.getItem('sps-prog-' + c.id);
+        if (saved) c.program = JSON.parse(saved);
+      } catch(e){}
+    }
+  });
+  if (simMode) runSim(); else render();
 }
 
 function openVdeSimulatorOverlay() {
@@ -6019,10 +6075,11 @@ global.ElektroSim={simulate, sprReading, ANY_L, POT_N:N, POT_PE:PE, POT_L1:L1, P
 <!-- ── SPS-Editor Overlay (statt eigenem Tab/Fenster — funktioniert auch in
      WebViews ohne Popup-Unterstützung, z.B. in der Offline-App) ───────────── -->
 <div id="sps-editor-overlay" style="display:none;position:fixed;inset:0;background:#fff;z-index:9500;flex-direction:column">
-  <div style="height:36px;flex-shrink:0;background:#1a365d;display:flex;align-items:center;padding:0 10px;box-shadow:0 2px 8px #0005">
-    <button onclick="closeSpsEditorOverlay()" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:4px 12px;border-radius:5px;cursor:pointer;font-size:12px">← Zurück zum Plan</button>
+  <div style="height:38px;flex-shrink:0;background:#1a365d;display:flex;align-items:center;padding:0 10px;gap:12px;box-shadow:0 2px 8px #0005">
+    <button onclick="closeSpsEditorOverlay()" style="background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);color:#fff;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">← Zurück zum Plan</button>
+    <span style="color:#93c5fd;font-size:12px;font-weight:700">⚡ SPS 12/8 FBD Programmiereditor</span>
   </div>
-  <iframe id="sps-editor-frame" style="flex:1;border:none;width:100%"></iframe>
+  <iframe id="sps-editor-frame" style="flex:1;border:none;width:100%;height:100%;min-height:0" allow="clipboard-read; clipboard-write"></iframe>
 </div>
 
 <!-- ── VDE-Simulator Overlay (VDE 0100/0105 Prüfgerät & Messlabor) ──────── -->
