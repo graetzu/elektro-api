@@ -209,13 +209,17 @@ kbd { background:rgba(255,255,255,0.15); border:1px solid rgba(255,255,255,0.3);
       <span class="beta-badge" title="Diese Anwendung befindet sich in der Beta-Phase">BETA</span>
       <div class="t-sep"></div>
       <button class="t-btn active" id="btn-sel" onclick="setMode('select')">▶ Auswählen</button>
+      <button class="t-btn" id="btn-multisel" onclick="setMode('multisel')" title="Mehrfachauswahl: Auswahlrahmen ziehen oder Bauteile antippen, um mehrere Bauteile gemeinsam zu verschieben oder zu löschen">⬚ Mehrfach</button>
       <button class="t-btn" id="btn-wire" onclick="setMode('wire')">〰 Kabel</button>
       <button class="t-btn" id="btn-bridge" onclick="setMode('bridge')" title="Auf den Punkt zwischen zwei angrenzenden Klemmen klicken, um die Brücke zu setzen bzw. wieder zu entfernen">🌉 Brücke</button>
       <button class="t-btn" id="btn-frame" onclick="setMode('frame')">▭ Rahmen</button>
       <button class="t-btn" id="btn-text" onclick="setMode('text')">T Text</button>
       <div class="t-sep"></div>
+      <button class="t-btn" id="btn-undo" onclick="undo()" title="Rückgängig (Strg+Z)" disabled style="opacity:0.4">↩ Rückgängig</button>
+      <button class="t-btn" id="btn-redo" onclick="redo()" title="Wiederholen (Strg+Y / Strg+Shift+Z)" disabled style="opacity:0.4">↪ Wiederholen</button>
+      <div class="t-sep"></div>
       <button class="t-btn" onclick="rotateSel()">↻ Drehen</button>
-      <button class="t-btn" onclick="delSel()">✕ Löschen</button>
+      <button class="t-btn" id="btn-del" onclick="delSel()">✕ Löschen</button>
       <button class="t-btn" onclick="clearAll()">🗑 Neu</button>
       <select class="t-btn" id="tpl-select" onchange="loadTemplate(this.value,this)" title="Vorlage laden"><option value="">📋 Vorlage…</option></select>
       <div class="t-sep"></div>
@@ -815,8 +819,8 @@ let comps = [], wires = [], cid = 0, wid = 0;
 let spsChannels = {}, spsSimTimer = null; // compId → { ch, comp } — SPS-Editor-Verknüpfungen
 let frames = [], texts = [], frid = 0, txid = 0;
 let sel = null, selFrame = null, selText = null, selWire = null;
-let selSet = new Set(), selBox = null;
-let history = [], spaceDown = false;
+let selSet = new Set(), selBox = null, justFinishedSelBox = false;
+let history = [], redoStack = [], spaceDown = false;
 let activePointers = new Map(); // pointerId→{x,y} for multi-touch tracking
 let pinchState = null; // {dist,vpX,vpY,vpZ,mx,my} on pinch start
 let longPressTimer = null, longPressStartX = 0, longPressStartY = 0, longPressComp = null;
@@ -3424,7 +3428,7 @@ function render() {
         if (now - lastClickTime < 350 && lastClickId === comp.id) {
           lastClickTime = 0; lastClickId = null;
           const v = prompt('Beschriftung:', comp.label||comp.def.label);
-          if (v !== null) { comp.label=v; render(); }
+          if (v !== null) { pushHistory(); comp.label=v; render(); }
           return;
         }
         lastClickTime = now; lastClickId = comp.id;
@@ -3468,26 +3472,59 @@ function render() {
       const isCableMid = e.target.classList.contains('cable-mid');
       const isCableEnd = e.target.classList.contains('cable-end');
       const isRailEnd = e.target.classList.contains('rail-end');
+      const p = svgPt(e);
 
-      // Long-press (touch/pen) → multi-select
+      // Mehrfachauswahl-Modus: Antippen toggelt Bauteil in selSet, Ziehen verschiebt alle ausgewählten Bauteile
+      if (mode==='multisel' && !isPort) {
+        if (sel!==null && !selSet.has(sel)) selSet.add(sel);
+        let toggleOffOnTapId = null;
+        if (selSet.has(comp.id)) {
+          toggleOffOnTapId = comp.id;
+        } else {
+          selSet.add(comp.id);
+          sel = comp.id;
+        }
+        const offsets = [...selSet].map(id=>{
+          const c=comps.find(c=>c.id===id);
+          return c?{id,ox:p.x-c.x,oy:p.y-c.y,sx:c.x,sy:c.y}:null;
+        }).filter(Boolean);
+        const wireSnaps = wires
+          .filter(w=>w.pts&&w.manual&&selSet.has(w.fid)&&selSet.has(w.tid))
+          .map(w=>({id:w.id,orig:w.pts.map(pt=>[...pt])}));
+        drag={multi:offsets,wireSnaps,ref:offsets[0]||null,toggleOffOnTapId};
+        render(); return;
+      }
+
+      // Long-press (touch/pen) → multi-select (vorherige Auswahl merken, falls selSet unten geleert wird)
       if (e.pointerType !== 'mouse' && !isPort && mode==='select') {
+        const savedSelSet = new Set(selSet);
+        const savedSel = sel;
         longPressStartX = e.clientX; longPressStartY = e.clientY; longPressComp = comp;
         longPressTimer = setTimeout(()=>{
           longPressTimer = null; longPressComp = null;
-          if (sel!==null && !selSet.has(sel)) selSet.add(sel);
+          if (typeof touchLongPressTimer !== 'undefined' && touchLongPressTimer) {
+            clearTimeout(touchLongPressTimer); touchLongPressTimer = null;
+          }
+          if (typeof touchDragComp !== 'undefined') touchDragComp = null;
+          savedSelSet.forEach(id => selSet.add(id));
+          if (savedSel!==null && !selSet.has(savedSel)) selSet.add(savedSel);
           if (!selSet.has(comp.id)) { selSet.add(comp.id); sel=comp.id; }
-          else selSet.delete(comp.id);
+          else { selSet.delete(comp.id); if (sel===comp.id) sel=selSet.size?[...selSet][selSet.size-1]:null; }
           drag = null;
           navigator.vibrate && navigator.vibrate(40);
           render();
-        }, 500);
+        }, 450);
       }
 
-      // Ctrl/Cmd or long-press: toggle multi-selection
-      if ((e.ctrlKey||e.metaKey) && !isPort) {
+      // Ctrl/Cmd/Shift: toggle multi-selection
+      if ((e.ctrlKey||e.metaKey||e.shiftKey) && !isPort) {
         if (sel!==null && !selSet.has(sel)) selSet.add(sel);
-        if (selSet.has(comp.id)) selSet.delete(comp.id);
-        else { selSet.add(comp.id); sel=comp.id; }
+        if (selSet.has(comp.id)) {
+          selSet.delete(comp.id);
+          if (sel===comp.id) sel = selSet.size ? [...selSet][selSet.size-1] : null;
+        } else {
+          selSet.add(comp.id); sel=comp.id;
+        }
         render(); return;
       }
 
@@ -3495,7 +3532,7 @@ function render() {
       const isSpsComp = comp.type === 'sps' || comp.type === 'sps24';
       if (!isPort && !comp.def.isCable) {
         const isQuickDoubleTap = (now - lastClickTime < 650 && lastClickId === comp.id);
-        const isTapOnSelectedSps = isSpsComp && (sel === comp.id);
+        const isTapOnSelectedSps = isSpsComp && (sel === comp.id) && selSet.size <= 1;
         if (isSpsComp && (isQuickDoubleTap || isTapOnSelectedSps)) {
           lastClickTime = 0; lastClickId = null;
           openSpsEditor(comp);
@@ -3504,12 +3541,11 @@ function render() {
         if (isQuickDoubleTap && !isSpsComp) {
           lastClickTime = 0; lastClickId = null;
           const v = prompt('Beschriftung:', comp.label || comp.def.label);
-          if (v !== null) { comp.label = v; render(); }
+          if (v !== null) { pushHistory(); comp.label = v; render(); }
           return;
         }
       }
       lastClickTime = now; lastClickId = comp.id;
-      const p = svgPt(e);
 
       // Multi-drag: drag whole selection if clicking a selected comp
       if (selSet.has(comp.id) && selSet.size >= 1 && !isPort) {
@@ -3530,7 +3566,7 @@ function render() {
       } else if ((comp.def.isCable||comp.def.isKanal) && isCableEnd) {
         drag = {comp, ox:p.x-(comp.ex||comp.x), oy:p.y-(comp.ey||comp.y), endDrag:true};
       } else if (comp.def.isCable && isCableMid) {
-        if (now - lastClickTime < 350) { delete comp.cx; delete comp.cy; render(); return; }
+        if (now - lastClickTime < 350) { pushHistory(); delete comp.cx; delete comp.cy; render(); return; }
         const ex=comp.ex||comp.x, ey=comp.ey||comp.y;
         const midX=comp.cx!==undefined?comp.cx:(comp.x+ex)/2;
         const midY=comp.cy!==undefined?comp.cy:(comp.y+ey)/2;
@@ -3795,6 +3831,7 @@ function render() {
 
   scheduleAutoSave();
   updateCompColorPanel();
+  updateUndoRedoButtons();
   const btnSps = document.getElementById('btn-sps-open');
   if (btnSps) {
     const hasSps = comps.some(c => c.type === 'sps' || c.type === 'sps24');
@@ -3803,27 +3840,65 @@ function render() {
   applyViewport();
 }
 
-// ── History (Undo) ─────────────────────────────────────────────────────────────
-function pushHistory() {
-  history.push({
+// ── History (Undo / Redo) ────────────────────────────────────────────────────
+function captureStateSnap() {
+  return {
     comps: comps.map(c=>{const {def,...r}=c; return JSON.parse(JSON.stringify(r));}),
     wires: JSON.parse(JSON.stringify(wires)),
     texts: JSON.parse(JSON.stringify(texts)),
     frames: JSON.parse(JSON.stringify(frames)),
     cid, wid, frid, txid
-  });
-  if (history.length > 30) history.shift();
+  };
 }
 
-function undo() {
-  if (!history.length) return;
-  const snap = history.pop();
+function restoreStateSnap(snap) {
   comps = snap.comps.map(c=>{const def=D[c.type]; return def?{...c,def}:null;}).filter(Boolean);
   wires = snap.wires; texts = snap.texts; frames = snap.frames;
   cid=snap.cid; wid=snap.wid; frid=snap.frid; txid=snap.txid;
   sel=null; selSet.clear(); selWire=null; selFrame=null; selText=null; drag=null;
   if (simMode) runSim();
   render();
+}
+
+function updateUndoRedoButtons() {
+  const btnU = document.getElementById('btn-undo');
+  const btnR = document.getElementById('btn-redo');
+  if (btnU) {
+    btnU.disabled = history.length === 0;
+    btnU.style.opacity = history.length === 0 ? '0.4' : '1';
+  }
+  if (btnR) {
+    btnR.disabled = redoStack.length === 0;
+    btnR.style.opacity = redoStack.length === 0 ? '0.4' : '1';
+  }
+  const btnDel = document.getElementById('btn-del');
+  if (btnDel) {
+    const cnt = selSet.size > 1 ? selSet.size : 0;
+    btnDel.textContent = cnt > 1 ? `✕ Löschen (${cnt})` : '✕ Löschen';
+  }
+}
+
+function pushHistory() {
+  history.push(captureStateSnap());
+  if (history.length > 40) history.shift();
+  redoStack = [];
+  updateUndoRedoButtons();
+}
+
+function undo() {
+  if (!history.length) return;
+  redoStack.push(captureStateSnap());
+  if (redoStack.length > 40) redoStack.shift();
+  const snap = history.pop();
+  restoreStateSnap(snap);
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  history.push(captureStateSnap());
+  if (history.length > 40) history.shift();
+  const snap = redoStack.pop();
+  restoreStateSnap(snap);
 }
 
 // ── Wire interaction ──────────────────────────────────────────────────────────
@@ -3937,7 +4012,7 @@ SVG.addEventListener('pointerdown', e=>{
   if (mode==='text' && onBg) {
     const p=svgPt(e);
     const t=prompt('Text:','Raum');
-    if (t) { texts.push({id:++txid,x:snp(p.x),y:snp(p.y),text:t,size:14}); render(); }
+    if (t) { pushHistory(); texts.push({id:++txid,x:snp(p.x),y:snp(p.y),text:t,size:14}); render(); }
     setMode('select'); return;
   }
   // Leitung-Modus: Klick auf Hintergrund fügt einen Knickpunkt hinzu -- über pointerdown statt
@@ -3959,7 +4034,7 @@ SVG.addEventListener('pointerdown', e=>{
     }
   }
 
-  if (!onBg || mode!=='select') return;
+  if (!onBg || (mode!=='select' && mode!=='multisel')) return;
 
   // Pointer-Tracking für Pinch-Zoom (Touch/Stift)
   activePointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
@@ -3976,25 +4051,26 @@ SVG.addEventListener('pointerdown', e=>{
     e.preventDefault(); return;
   }
 
-  // Mittlere Taste ODER Space+Links ODER Links ohne Shift ODER Touch/Pen-Einzel-Finger auf Hintergrund → Pan
   // Ausnahme: wartet gerade ein Bauteil aus der Sidebar auf's Platzieren (Touch-Tippen), dann NICHT
   // pannen — sonst unterdrückt preventDefault()/setPointerCapture() das Klick-Event fürs Platzieren.
   if (sbPending && sbType) return;
+
+  // Im Mehrfachauswahl-Modus (oder Shift+Links): Auswahlrahmen auf Hintergrund aufziehen
+  if ((mode==='multisel' && e.button!==1 && !spaceDown && activePointers.size<=1) || (e.button===0 && e.shiftKey)) {
+    const p=svgPt(e);
+    selBox={sx:p.x,sy:p.y,ex:p.x,ey:p.y,clearFirst:(!e.ctrlKey&&!e.metaKey&&!e.shiftKey)};
+    document.getElementById('selbox-rect').style.display='';
+    SVG.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
+
+  // Mittlere Taste ODER Space+Links ODER Links ohne Shift ODER Touch/Pen-Einzel-Finger auf Hintergrund → Pan
   const isTouch = e.pointerType==='touch'||e.pointerType==='pen';
   if (e.button===1 || (e.button===0 && (spaceDown || !e.shiftKey)) || (isTouch && activePointers.size===1)) {
     panDrag={sx:e.clientX,sy:e.clientY,vx:vpX,vy:vpY,pid:e.pointerId};
     SVG.setPointerCapture(e.pointerId);
     e.preventDefault(); return;
-  }
-
-  // Shift+Linke Maustaste auf Hintergrund → Auswahlrahmen
-  if (e.button===0 && e.shiftKey) {
-    if (!e.ctrlKey&&!e.metaKey) selSet.clear();
-    const p=svgPt(e);
-    selBox={sx:p.x,sy:p.y,ex:p.x,ey:p.y};
-    document.getElementById('selbox-rect').style.display='';
-    SVG.setPointerCapture(e.pointerId);
-    e.preventDefault();
   }
 });
 
@@ -4076,7 +4152,7 @@ SVG.addEventListener('pointermove', e=>{
     fp.style.display='';
   }
   if (drag) {
-    if (!drag.histPushed && (drag.comp||drag.wireSeg||drag.wireVtx)) { pushHistory(); drag.histPushed=true; }
+    if (!drag.histPushed && (drag.comp||drag.wireSeg||drag.wireVtx||drag.text||drag.railResize||drag.labelDrag)) { pushHistory(); drag.histPushed=true; }
     const nx=drag.ox!=null?snp(p.x-drag.ox):p.x, ny=drag.oy!=null?snp(p.y-drag.oy):p.y;
     if (drag.text) {
       drag.text.x=nx; drag.text.y=ny; render(); return;
@@ -4240,10 +4316,17 @@ SVG.addEventListener('pointerup', e=>{
     const x1=Math.min(selBox.sx,selBox.ex),y1=Math.min(selBox.sy,selBox.ey);
     const x2=Math.max(selBox.sx,selBox.ex),y2=Math.max(selBox.sy,selBox.ey);
     if (Math.abs(x2-x1)>5||Math.abs(y2-y1)>5) {
+      if (selBox.clearFirst) { selSet.clear(); sel = null; }
       comps.forEach(c=>{
         const bb=compBBox(c);
-        if(bb.x1>=x1&&bb.x2<=x2&&bb.y1>=y1&&bb.y2<=y2) selSet.add(c.id);
+        if (c.def.uvRows || c.def.isDINRail) {
+          if(bb.x1>=x1&&bb.x2<=x2&&bb.y1>=y1&&bb.y2<=y2) selSet.add(c.id);
+        } else {
+          if(bb.x2>=x1&&bb.x1<=x2&&bb.y2>=y1&&bb.y1<=y2) selSet.add(c.id);
+        }
       });
+      sel = selSet.size ? [...selSet][selSet.size-1] : null;
+      justFinishedSelBox = true;
     }
     selBox=null; document.getElementById('selbox-rect').style.display='none';
     render(); return;
@@ -4251,24 +4334,32 @@ SVG.addEventListener('pointerup', e=>{
   if (frameDrawing && mode==='frame') {
     const p=svgPt(e), ex=snp(p.x), ey=snp(p.y);
     const fw=Math.abs(ex-frameDrawing.x), fh=Math.abs(ey-frameDrawing.y);
-    if (fw>20&&fh>20) frames.push({
-      id:++frid, x:Math.min(frameDrawing.x,ex), y:Math.min(frameDrawing.y,ey), w:fw, h:fh, label:''
-    });
+    if (fw>20&&fh>20) {
+      pushHistory();
+      frames.push({
+        id:++frid, x:Math.min(frameDrawing.x,ex), y:Math.min(frameDrawing.y,ey), w:fw, h:fh, label:''
+      });
+    }
     frameDrawing=null; document.getElementById('fpreview').style.display='none'; render();
   }
   if (drag && drag.multi) {
-    wires.forEach(w=>{
-      if(!w.manual) return;
-      const fIn=selSet.has(w.fid), tIn=selSet.has(w.tid);
-      if(fIn!==tIn){delete w.pts; delete w.manual;}
-    });
-    drag.multi.forEach(({id})=>{
-      const c=comps.find(c=>c.id===id);
-      if(!c) return;
-      if(c.def.isDINDevice) snapToDINRail(c);
-      else if(c.def.isDINRail) snapRailToUV(c);
-      else if(c.def.isActuator||c.def.isContact) snapToHousing(c);
-    });
+    if (!drag.histPushed && drag.toggleOffOnTapId != null) {
+      selSet.delete(drag.toggleOffOnTapId);
+      if (sel === drag.toggleOffOnTapId) sel = selSet.size ? [...selSet][selSet.size-1] : null;
+    } else if (drag.histPushed) {
+      wires.forEach(w=>{
+        if(!w.manual) return;
+        const fIn=selSet.has(w.fid), tIn=selSet.has(w.tid);
+        if(fIn!==tIn){delete w.pts; delete w.manual;}
+      });
+      drag.multi.forEach(({id})=>{
+        const c=comps.find(c=>c.id===id);
+        if(!c) return;
+        if(c.def.isDINDevice) snapToDINRail(c);
+        else if(c.def.isDINRail) snapRailToUV(c);
+        else if(c.def.isActuator||c.def.isContact) snapToHousing(c);
+      });
+    }
     render();
   }
   if (drag && drag.comp) {
@@ -4288,6 +4379,7 @@ document.addEventListener('pointerup', e=>{
 // Hide tooltip when leaving SVG
 SVG.addEventListener('pointerleave', hideTip);
 SVG.addEventListener('click',e=>{
+  if (justFinishedSelBox) { justFinishedSelBox = false; return; }
   if (mode==='frame'||mode==='text') return;
   // Pending placement from sidebar tap
   if (sbPending && sbType) {
@@ -4495,11 +4587,13 @@ SVG.addEventListener('drop', e=>{
 function setMode(m) {
   mode=m;
   document.getElementById('btn-sel').classList.toggle('active',m==='select');
+  const btnMulti = document.getElementById('btn-multisel');
+  if (btnMulti) btnMulti.classList.toggle('active',m==='multisel');
   document.getElementById('btn-wire').classList.toggle('active',m==='wire');
   document.getElementById('btn-bridge').classList.toggle('active',m==='bridge');
   document.getElementById('btn-frame').classList.toggle('active',m==='frame');
   document.getElementById('btn-text').classList.toggle('active',m==='text');
-  SVG.style.cursor = (m==='wire'||m==='bridge'||m==='frame'||m==='text')?'crosshair':'grab';
+  SVG.style.cursor = (m==='wire'||m==='bridge'||m==='frame'||m==='text'||m==='multisel')?'crosshair':'grab';
   if (m!=='wire') cancelWire();
   if (m!=='frame') { frameDrawing=null; document.getElementById('fpreview').style.display='none'; }
   render();
@@ -4512,7 +4606,7 @@ function pickWireColor(label, color, el) {
   // Wenn eine Ader ausgewählt ist, Farbe direkt ändern
   if (selWire) {
     const w=wires.find(w=>w.id===selWire);
-    if (w) { w.color=color; w.label=label; render(); }
+    if (w) { pushHistory(); w.color=color; w.label=label; render(); }
   }
 }
 
@@ -4520,6 +4614,7 @@ function pickCompColor(color, el) {
   if (!sel) return;
   const c=comps.find(c=>c.id===sel);
   if (c && c.def.colorable) {
+    pushHistory();
     c.state.color=color;
     document.querySelectorAll('#comp-color-wrap .swatch').forEach(s=>s.classList.remove('active'));
     el.classList.add('active');
@@ -4548,26 +4643,37 @@ function updateCompColorPanel() {
 
 // ── Actions ────────────────────────────────────────────────────────────────────
 function rotateSel() {
-  if (!sel) return;
-  const c=comps.find(c=>c.id===sel);
+  const targetId = sel || (selSet.size === 1 ? [...selSet][0] : null);
+  if (!targetId) return;
+  const c=comps.find(c=>c.id===targetId);
   if (c&&!c.def.isCable&&!c.def.isKanal) {
+    pushHistory();
     c.rot=((c.rot||0)+90)%360;
-    wires.forEach(w=>{if(w.fid===sel||w.tid===sel){delete w.pts;delete w.manual;}});
+    wires.forEach(w=>{if(w.fid===targetId||w.tid===targetId){delete w.pts;delete w.manual;}});
     render();
   }
 }
 
 function delSel() {
-  if (sel) {
+  if (selSet.size > 0 || sel) {
     pushHistory();
-    comps.forEach(c=>{if(c.railId===sel){c.railId=null;c.tePos=null;}});
-    comps.forEach(c=>{if(c.uvId===sel){c.uvId=null;c.uvRow=null;}});
-    wires=wires.filter(w=>w.fid!==sel&&w.tid!==sel);
-    comps=comps.filter(c=>c.id!==sel);
-    sel=null;
+    const toDelete = new Set(selSet);
+    if (sel) toDelete.add(sel);
+    toDelete.forEach(id => {
+      comps.forEach(c => {
+        if (c.railId === id) { c.railId = null; c.tePos = null; }
+        if (c.uvId === id) { c.uvId = null; c.uvRow = null; }
+        if (c.housingId === id) { c.housingId = null; c.rowIdx = null; c.contactIdx = null; }
+      });
+    });
+    wires = wires.filter(w => !toDelete.has(w.fid) && !toDelete.has(w.tid));
+    comps = comps.filter(c => !toDelete.has(c.id));
+    selSet.clear();
+    sel = null;
   } else if (selWire)  { pushHistory(); wires =wires.filter(w=>w.id!==selWire);   selWire=null; }
   else if (selFrame) { pushHistory(); frames=frames.filter(f=>f.id!==selFrame); selFrame=null; }
   else if (selText)  { pushHistory(); texts =texts.filter(t=>t.id!==selText);   selText=null; }
+  if (simMode) runSim();
   render();
 }
 
@@ -4749,7 +4855,7 @@ function importPlan(data) {
   frid = frames.length ? Math.max(...frames.map(f=>f.id)) : 0;
   txid = texts.length  ? Math.max(...texts.map(t=>t.id))  : 0;
   sel=null; selSet.clear(); selWire=null; selFrame=null; selText=null;
-  drag=null; cancelWire(); history=[];
+  drag=null; cancelWire(); history=[]; redoStack=[];
   render();
   requestAnimationFrame(fitView);
 }
@@ -4772,10 +4878,12 @@ document.addEventListener('keyup', e=>{ if(e.key===' '){spaceDown=false; SVG.sty
 document.addEventListener('keydown', e=>{
   if (e.key===' '&&!e.target.matches('input,textarea')){ spaceDown=true; SVG.style.cursor='grab'; e.preventDefault(); return; }
   if (e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+  // Ctrl+Y oder Ctrl+Shift+Z = Redo
+  if ((e.ctrlKey||e.metaKey) && (e.key==='y'||e.key==='Y'||(e.shiftKey&&(e.key==='z'||e.key==='Z')))) { e.preventDefault(); redo(); return; }
   // Ctrl+Z = Undo
-  if ((e.ctrlKey||e.metaKey) && e.key==='z') { e.preventDefault(); undo(); return; }
+  if ((e.ctrlKey||e.metaKey) && (e.key==='z'||e.key==='Z')) { e.preventDefault(); undo(); return; }
   // Ctrl+A = alles auswählen
-  if ((e.ctrlKey||e.metaKey) && e.key==='a') { e.preventDefault(); comps.forEach(c=>selSet.add(c.id)); render(); return; }
+  if ((e.ctrlKey||e.metaKey) && (e.key==='a'||e.key==='A')) { e.preventDefault(); comps.forEach(c=>selSet.add(c.id)); render(); return; }
   // Wire drawing shortcuts
   if (wfrom) {
     if (e.key==='x'||e.key==='X') { wHfirst=!wHfirst; return; } // toggle H/V bend
@@ -4786,37 +4894,16 @@ document.addEventListener('keydown', e=>{
       return;
     }
   }
-  if ((e.key==='r'||e.key==='R') && sel) {
-    const c=comps.find(c=>c.id===sel);
-    if (c&&!c.def.isCable&&!c.def.isKanal) {
-      c.rot=((c.rot||0)+90)%360;
-      // Clear manual paths for connected wires so they re-route
-      wires.forEach(w=>{if(w.fid===sel||w.tid===sel){delete w.pts;delete w.manual;}});
-      render();
-    }
+  if ((e.key==='r'||e.key==='R') && (sel || selSet.size===1)) {
+    rotateSel();
     return;
   }
   if (e.key==='Delete'||e.key==='Backspace') {
-    if (selSet.size > 0) {
-      pushHistory();
-      selSet.forEach(id=>{
-        comps.forEach(c=>{if(c.railId===id){c.railId=null;c.tePos=null;}});
-        comps.forEach(c=>{if(c.uvId===id){c.uvId=null;c.uvRow=null;}});
-        wires=wires.filter(w=>w.fid!==id&&w.tid!==id);
-        comps=comps.filter(c=>c.id!==id);
-      });
-      selSet.clear(); sel=null; render(); return;
-    }
-    if (sel) delSel();
-    if (selWire)  { pushHistory(); wires =wires.filter(w=>w.id!==selWire);   selWire=null;  render(); }
-    if (selFrame) { pushHistory(); frames=frames.filter(f=>f.id!==selFrame); selFrame=null; render(); }
-    if (selText)  { pushHistory(); texts =texts.filter(t=>t.id!==selText);   selText=null;  render(); }
+    delSel();
+    return;
   }
   if (e.key==='Escape') {
-    mode='select';
-    document.getElementById('btn-sel').classList.add('active');
-    document.getElementById('btn-wire').classList.remove('active');
-    SVG.style.cursor='grab';
+    setMode('select');
     cancelWire(); sbCancelTap(); sel=null; selSet.clear(); selWire=null; selFrame=null; selText=null; render();
   }
 });
@@ -5065,13 +5152,19 @@ SVG.addEventListener('touchstart', e=>{
     return;
   }
 
+  // In multisel mode, Pointer Events (pointerdown/pointermove/pointerup) handle selBox and drag.multi directly
+  if (mode==='multisel') {
+    return;
+  }
+
   // Component body in select mode: tap=select, long-press=drag
   if (compG) {
     // Select immediately
     e.target.dispatchEvent(new MouseEvent('mousedown',{clientX:t.clientX,clientY:t.clientY,bubbles:true}));
     const compId=parseInt(compG.getAttribute('data-id'));
     const comp=comps.find(c=>c.id===compId);
-    if (comp) {
+    // Wenn bereits eine Mehrfachauswahl besteht und ein ausgewähltes Bauteil gezogen wird, übernimmt drag.multi
+    if (comp && !(selSet.has(compId) && selSet.size > 1)) {
       touchLongPressTimer=setTimeout(()=>{
         touchLongPressTimer=null;
         if (touchDidMove) return;
@@ -5085,7 +5178,7 @@ SVG.addEventListener('touchstart', e=>{
     return;
   }
 
-  // Background: start pan immediately
+  // Background: start pan immediately (außer im multisel-Modus)
   panDrag={sx:t.clientX, sy:t.clientY, vx:vpX, vy:vpY};
   // Also dispatch mousedown for frame/text mode
   if (mode==='frame'||mode==='text')
@@ -5112,6 +5205,8 @@ SVG.addEventListener('touchmove', e=>{
   const t=e.touches[0];
   const moved=Math.hypot(t.clientX-touchStartX,t.clientY-touchStartY);
   if (moved>5) touchDidMove=true;
+
+  if (mode==='multisel' || (drag && drag.multi)) return;
 
   // Cancel long-press on significant movement → switch to pan
   if (touchLongPressTimer && moved>8) {
